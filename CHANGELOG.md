@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added `PropertySyntax::DockerComposeWithNulls`: Compose interpolation where a value that is
+  solely a reference to an unset property, or whose expansion is `null`/`~`, becomes YAML null.
+  Explicitly empty properties and empty defaults stay empty strings, and `DockerCompose` itself
+  is unchanged.
 - Added opt-in `Options::reject_tagged_field_names` to catch misplaced tags on
   struct field names, with `Error::TaggedStructFieldName` diagnostics. Struct field names can
   only be strings, `!!str` is still accepted. As other tags can only be ignored, tag on a structure

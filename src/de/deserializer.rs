@@ -25,7 +25,7 @@ use super::options::{DuplicateKeyPolicy, MergeKeyPolicy, NonFiniteFloatPolicy};
 #[cfg(any(feature = "garde", feature = "validator"))]
 use super::path_map::PathRecorder;
 #[cfg(feature = "properties")]
-use super::properties::interpolate_compose_style_with_limits;
+use super::properties::{interpolate_compose_style_with_limits, is_sole_unset_reference};
 use super::properties_redaction::{
     ScalarRedactionCtx, ScalarRedactionGuard, with_interp_redaction_scope,
 };
@@ -454,7 +454,7 @@ impl<'de, 'e> YamlDeserializer<'de, 'e> {
         }
 
         match properties.syntax() {
-            PropertySyntax::DockerCompose => tag.can_parse_into_string(),
+            syntax if syntax.is_docker_compose() => tag.can_parse_into_string(),
             _ => style == ScalarStyle::Plain,
         }
     }
@@ -665,17 +665,8 @@ impl<'de, 'e> YamlDeserializer<'de, 'e> {
         };
         let interpolated = can_interpolate && raw.as_ref() != effective.as_ref();
         #[cfg(feature = "properties")]
-        let tag = if interpolated
-            && self.ev.property_interpolation().syntax()
-                == super::options::PropertySyntax::DockerCompose
-            && tag.can_parse_into_string()
-            && !tag.forces_string()
-        {
-            // Compose parses YAML before interpolation. An expanded string stays a
-            // string even when its contents look like null, a boolean, or a number.
-            // The non-specific tag preserves this for generic visitors while still
-            // allowing explicitly requested numeric types to parse the result.
-            SfTag::NonSpecific
+        let tag = if interpolated {
+            self.compose_expansion_tag(&raw, &effective, tag)
         } else {
             tag
         };
@@ -687,6 +678,35 @@ impl<'de, 'e> YamlDeserializer<'de, 'e> {
             location,
             interpolated,
         })
+    }
+
+    /// How an interpolated scalar is resolved under the Compose syntaxes.
+    ///
+    /// Compose parses YAML before interpolation. An expanded string stays a string even
+    /// when its contents look like null, a boolean, or a number. The non-specific tag
+    /// preserves this for generic visitors while still allowing explicitly requested
+    /// numeric types to parse the result.
+    ///
+    /// [`PropertySyntax::DockerComposeWithNulls`] instead tags a value that should be null
+    /// (see its docs) as `!!null`, so every target treats it exactly like a literal null.
+    /// Explicit and string-forcing tags are left alone by both modes.
+    #[cfg(feature = "properties")]
+    fn compose_expansion_tag(&self, raw: &str, effective: &str, tag: SfTag) -> SfTag {
+        let properties = self.ev.property_interpolation();
+        let syntax = properties.syntax();
+        if !syntax.is_docker_compose() || !tag.can_parse_into_string() || tag.forces_string() {
+            return tag;
+        }
+        let becomes_null = syntax == PropertySyntax::DockerComposeWithNulls
+            && (matches!(effective, "~" | "null" | "Null" | "NULL")
+                || properties
+                    .property_map()
+                    .is_some_and(|vars| is_sole_unset_reference(raw, vars)));
+        if becomes_null {
+            SfTag::Null
+        } else {
+            SfTag::NonSpecific
+        }
     }
 
     /// Expand properties after the caller has checked scalar interpolation eligibility.
